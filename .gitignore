@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Source financial documents / local data
+data/*.xlsx
+data/*.xls
+data/*.pdf
+data/*.PDF
+
+# Logs / temporary files
+*.log
+tmp/
