@@ -27,3 +27,5 @@ data/*.PDF
 # Logs / temporary files
 *.log
 tmp/
+
+samples/

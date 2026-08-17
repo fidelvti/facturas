@@ -26,9 +26,11 @@ The workbook contains 9 worksheets:
   - Most utility sheets use numeric `YYYYMM` values, for example `202604`.
   - `Pagatelia` uses text `YYYYMM` values.
   - `Nóminas - GFT report` uses date-like text values representing the first day of the month, for example `2026-07-01`.
+- The historical/future boundary is not based on `Periodo`, invoice date, or billing date. All records present in `_Facturas.xlsx` at the moment of initial migration are historical records; after go-live, any document processed by the new ingestion system is a new record, even if it refers to an earlier billing period.
 - Several Gas and Luz worksheets contain formulas in `Total` columns. Their cached values are part of the workbook data and should be migrated as historical values, not recomputed.
 - Gas and Luz are split into multiple worksheets that appear to describe different parts of the same provider invoice/period.
 - Gas and Luz detail sheets have repeated periods, so the future schema must allow multiple line rows per invoice or period.
+- Provider plus period must not be treated as a unique business key for the long-term system. Future data may include adjustments, corrective invoices, or multiple invoices in the same billing period.
 - Monetary and rate values should be stored as exact decimal text or scaled integers during migration, not binary floating point.
 - Existing row order matters for duplicated periods and should be preserved with a source worksheet row number or line sequence.
 
@@ -279,18 +281,17 @@ Structural notes:
 
 ## Migration-Relevant Peculiarities
 
-- `Periodo` should be normalized for querying, but original values and source cell types should be preserved for auditability.
+- `Periodo` should be normalized for querying, but original period values should be preserved for auditability.
 - Gas and Luz require invoice/period header records plus child component rows.
 - Some worksheets have no explicit invoice total column, only component totals. Historical component totals should be migrated as given.
 - Formula cells should preserve at least the cached value. Preserving the formula text as source metadata is useful but should not be used to recalculate historical values.
 - `Nóminas - GFT report` has meaningful nulls in optional payroll component columns.
-- `Luz - Otros - Tabla 3`.`Peaje A` includes one numeric-looking value stored as text. This should be recorded as a structural peculiarity, not silently treated as an error.
+- `Luz - Otros - Tabla 3`.`Peaje A` includes one numeric-looking value stored as text. This should be recorded as a structural peculiarity, not silently treated as an error. A record-level field for this exceptional original value is enough; no generic cell-level audit table is planned.
 - Workbook row numbers should be retained because several candidate natural keys are not unique.
 
 ## Open Questions
 
 - Should `Periodo` represent invoice issue month, consumption/service month, payment month, or a manually chosen reporting month for each provider?
-- Are Gas and Luz `Periodo` values intended to identify one invoice each, or can more than one invoice exist for the same provider and period?
 - What exact units should be assigned to Gas `Consumo`, Luz `Consumo`, and payroll `Guardias`?
 - What are the exact provider meanings of Gas `Imp HC`, `Canon`, `Peajes`, `Cargos`, and Luz `Imp.Elec.`, `Peaje A/B`, `Cargo A/B`?
 - For future ingestion, which workbook totals should become validation targets versus only analytical fields?

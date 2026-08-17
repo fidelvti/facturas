@@ -9,8 +9,10 @@ No database is created in this task.
 - Preserve every historical workbook value as authoritative.
 - Distinguish historical migrated records from future automatically ingested records.
 - Allow multiple Gas/Luz detail rows per period or invoice.
+- Support multiple invoices for the same provider and period. `provider + period_yyyymm` is a lookup, not a unique key.
 - Keep original workbook provenance: worksheet name, Excel row number, original period value, and import batch.
 - Avoid recalculating historical formulas while allowing future deterministic validation.
+- Allow application-level manual corrections with an audit trail; users should not edit SQLite directly.
 - Keep the schema small enough for a local SQLite/Streamlit application.
 
 ## Core Concepts
@@ -21,6 +23,7 @@ No database is created in this task.
 - Provider-specific detail tables: store the workbook shapes faithfully where the columns are provider-specific.
 - `payroll_report`: payroll period rows from `Nóminas - GFT report`.
 - `toll_transaction`: Pagatelia row-level historical and future toll/payment data.
+- `manual_correction_audit`: append-only record of application-level corrections.
 
 ## Proposed Tables
 
@@ -30,12 +33,18 @@ CREATE TABLE migration_batch (
     source_workbook_path TEXT NOT NULL,
     workbook_sha256 TEXT,
     imported_at TEXT NOT NULL,
-    migration_boundary_date TEXT,
+    go_live_at TEXT,
     notes TEXT
 );
 ```
 
-Purpose: records the one-time historical import and the explicit go-live boundary.
+Purpose: records the one-time historical import and the explicit go-live point.
+
+Boundary rule:
+
+- All records present in `_Facturas.xlsx` at the moment of the initial migration are authoritative historical records.
+- The boundary is based on ingestion/go-live state, not invoice period or invoice date.
+- After go-live, any document processed by the new ingestion system is a new document, even if it refers to an earlier billing period.
 
 ```sql
 CREATE TABLE source_document (
@@ -65,7 +74,9 @@ CREATE TABLE invoice (
     invoice_kind TEXT NOT NULL,
     period_yyyymm TEXT,
     original_period_value TEXT,
+    provider_invoice_id TEXT,
     invoice_total TEXT,
+    amount_payable TEXT,
     ingestion_origin TEXT NOT NULL CHECK (ingestion_origin IN ('historical_workbook', 'automated', 'manual')),
     migration_batch_id INTEGER REFERENCES migration_batch(id),
     source_document_id INTEGER REFERENCES source_document(id),
@@ -81,22 +92,49 @@ Purpose: common invoice/period header. For historical rows, `source_worksheet` a
 
 Notes:
 
-- `invoice_total` is nullable because several workbook sheets have component totals but no explicit invoice total.
+- `provider_invoice_id` is nullable because the workbook does not contain explicit invoice numbers. Future extractors can populate it when a document exposes one.
+- `invoice_total` is nullable because several workbook sheets have component totals but no explicit invoice total. For new Endesa electricity invoices, this means the printed invoice `TOTAL` before optional post-total discounts/adjustments.
+- `amount_payable` is nullable and is intended for new invoices where the final payable amount is available. Historical rows may leave it `NULL`; do not reconstruct historical discounts.
 - For `Agua`, `invoice_total` can store `Importe total`.
 - For Gas and Luz, invoice totals should be filled only when supported by future source extraction or an agreed rule. Historical component totals should not be summed to invent missing invoice totals.
-- Enforce uniqueness with indexes suited to the chosen record shape, for example one historical invoice per provider/period for utility headers, and row-level uniqueness in child tables.
+- Do not enforce uniqueness on `(provider, period_yyyymm)`. The model must allow adjustments, corrective invoices, or multiple invoices in one billing period.
+- Use source-document idempotency for automated imports and source-row provenance for historical imports.
 
 Suggested uniqueness indexes:
 
 ```sql
-CREATE UNIQUE INDEX uq_invoice_period_origin
-ON invoice(provider, invoice_kind, period_yyyymm, ingestion_origin)
-WHERE source_document_id IS NULL;
+CREATE UNIQUE INDEX uq_invoice_historical_source_row
+ON invoice(source_worksheet, source_row_number)
+WHERE ingestion_origin = 'historical_workbook'
+  AND source_worksheet IS NOT NULL
+  AND source_row_number IS NOT NULL;
 
-CREATE UNIQUE INDEX uq_invoice_source_document
-ON invoice(source_document_id)
-WHERE source_document_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_invoice_provider_invoice_id
+ON invoice(provider, provider_invoice_id)
+WHERE provider_invoice_id IS NOT NULL;
 ```
+
+`uq_invoice_historical_source_row` works for historical one-row invoice sheets such as `Agua`. Gas and Luz component sheets keep row uniqueness in their child tables because the header can group several workbook rows.
+
+## Invoice Adjustments
+
+```sql
+CREATE TABLE invoice_adjustment (
+    id INTEGER PRIMARY KEY,
+    invoice_id INTEGER NOT NULL REFERENCES invoice(id),
+    description TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    category TEXT
+);
+```
+
+Purpose: stores optional signed post-total adjustments for new invoices, for example `PARA TI | -5.00`. These rows are not reconstructed for historical migrated workbook data.
+
+For new Endesa electricity invoices:
+
+- `Potencia + Energía + Varios + Impuestos = invoice_total`.
+- `invoice_total + signed invoice_adjustment.amount values = amount_payable`.
+- Peajes and cargos remain informational breakdowns already included in the main sections and must not be added again during reconciliation.
 
 ## Water
 
@@ -119,7 +157,7 @@ Mapping from `Agua`:
 
 ## Gas
 
-For Gas, create one logical `invoice` per period where possible, then attach rows from the three component worksheets. Because the workbook itself stores rows separately, every detail row should retain source worksheet and row number.
+For historical Gas data, create invoice headers that can group rows from the three component worksheets, but do not make `provider + period_yyyymm` unique. Because the workbook itself stores rows separately, every detail row should retain source worksheet and row number.
 
 ```sql
 CREATE TABLE gas_power_line (
@@ -176,9 +214,9 @@ Historical mapping:
 - Repeated periods are expected in child tables.
 - Formula cached totals are stored as `total`; formula text may be stored in `formula_text` for audit only.
 
-Open design choice:
+Historical migration rule:
 
-- Whether to create a single `invoice` header per gas period and attach all matching component rows, or create separate invoice headers per source worksheet row. A single header per period is more normalized; preserving row-level source metadata in child lines protects fidelity.
+- During the initial historical migration, group existing Gas workbook rows by period into one invoice-like header for analysis convenience. This is a migration convention for the legacy workbook only, not a uniqueness rule. The schema still supports later multiple Gas invoices for the same provider and period by allowing additional `invoice` rows with the same `period_yyyymm`.
 
 ## Electricity
 
@@ -242,9 +280,9 @@ Historical mapping:
 - Repeated periods are expected in power and consumption child tables.
 - `original_peaje_a_value` and `original_peaje_a_cell_type` preserve the one text-like numeric value observed in `Peaje A`.
 
-Open design choice:
+Historical migration rule:
 
-- As with Gas, use one invoice header per electricity period unless future evidence shows multiple invoices can share a provider and period.
+- During the initial historical migration, group existing Luz workbook rows by period into one invoice-like header for analysis convenience. This is a migration convention for the legacy workbook only, not a uniqueness rule. The schema still supports later multiple Luz invoices for the same provider and period by allowing additional `invoice` rows with the same `period_yyyymm`.
 
 ## Pagatelia
 
@@ -310,26 +348,31 @@ Notes:
 - `guardias` remains an open question: the sheet does not prove whether it is money, hours, or another quantity.
 - `% IRPF` should be stored as the displayed percent number, for example `22.52`, not converted to `0.2252` unless a future calculation layer explicitly needs that.
 
-## Optional Audit Table
-
-For maximum migration fidelity, add a generic cell/value audit table. This is useful if preserving exact original cell types, formulas, or formatting becomes important.
+## Manual Corrections
 
 ```sql
-CREATE TABLE workbook_cell_audit (
+CREATE TABLE manual_correction_audit (
     id INTEGER PRIMARY KEY,
-    migration_batch_id INTEGER NOT NULL REFERENCES migration_batch(id),
-    source_worksheet TEXT NOT NULL,
-    source_row_number INTEGER NOT NULL,
-    source_column_name TEXT NOT NULL,
-    source_cell_ref TEXT,
-    raw_value TEXT,
-    normalized_value TEXT,
-    cell_type TEXT,
-    formula_text TEXT
+    table_name TEXT NOT NULL,
+    record_id INTEGER NOT NULL,
+    field_name TEXT NOT NULL,
+    previous_value TEXT,
+    new_value TEXT,
+    changed_at TEXT NOT NULL,
+    changed_by TEXT,
+    reason TEXT
 );
 ```
 
-Tradeoff: this increases storage and migration complexity, but it makes the migration highly auditable. For a small personal workbook, the cost is modest.
+Purpose: supports future application-level corrections without requiring direct SQLite edits.
+
+Rules:
+
+- Corrections should be made through application code, not by hand-editing SQLite.
+- Every correction should insert one audit row per changed field.
+- `previous_value` and `new_value` are stored as text to match the schema's faithful decimal/text preservation strategy.
+- `table_name` and `record_id` identify the affected record. SQLite cannot enforce a polymorphic foreign key here, so the application layer must validate the target table and record.
+- `ingestion_origin = 'manual'` is for manual records or correction records where applicable. For edits to existing records, keep the original record's ingestion origin and use this audit table to record the manual change.
 
 ## Period Normalization
 
@@ -350,7 +393,7 @@ Every business table has `ingestion_origin`:
 
 - `historical_workbook`: migrated from `_Facturas.xlsx`.
 - `automated`: parsed from a future source document after go-live.
-- `manual`: future manual correction or entry, if allowed.
+- `manual`: future application-created manual entry or correction record.
 
 Historical workbook rows should also carry:
 
@@ -358,6 +401,7 @@ Historical workbook rows should also carry:
 - `source_worksheet`.
 - `source_row_number`.
 - Original values as text.
+- Historical records are defined by presence in `_Facturas.xlsx` at initial migration time, not by their invoice period.
 
 Future automated rows should carry:
 
@@ -366,6 +410,21 @@ Future automated rows should carry:
 - `extraction_status`.
 - `validation_status`.
 - `validation_notes` when discrepancies require review.
+- Future automated rows are defined by being processed after go-live, even if their billing period is earlier than the go-live date.
+
+New-file scanner rule:
+
+- At scanner activation, store a single `scanner_started_at` timestamp.
+- Do not inspect, register, hash, classify, extract, or import files already present under `_print`.
+- During later scans, recognized files whose filesystem modification time is not later than `scanner_started_at` are ignored as historical.
+- Recognized files newer than `scanner_started_at` are handed to the existing ingestion pipeline, where SHA256 duplicate handling remains the safeguard for new files.
+- Unsupported filenames are ignored without creating `source_document` records.
+
+Manual corrections:
+
+- Users should correct records through the application, not direct database editing.
+- Each field-level change should be recorded in `manual_correction_audit`.
+- The corrected business record may keep its original `ingestion_origin`; the audit row is the evidence of manual intervention.
 
 ## Suggested Indexes
 
@@ -375,6 +434,7 @@ CREATE INDEX idx_invoice_source_document ON invoice(source_document_id);
 CREATE INDEX idx_toll_period ON toll_transaction(period_yyyymm);
 CREATE INDEX idx_payroll_period ON payroll_report(period_yyyymm);
 CREATE INDEX idx_source_document_hash ON source_document(file_sha256);
+CREATE INDEX idx_manual_correction_record ON manual_correction_audit(table_name, record_id);
 ```
 
 ## Migration Approach Later
@@ -386,13 +446,11 @@ When implementation begins:
 3. Normalize periods into `period_yyyymm` while preserving original values.
 4. Insert historical data with `ingestion_origin = 'historical_workbook'`.
 5. Preserve source worksheet and row numbers.
-6. For formulas, migrate cached values as business values and optionally formula text into audit fields.
+6. For formulas, migrate cached values as business values and optionally preserve formula text on the relevant record-level table where a `formula_text` column exists.
 7. Do not read or compare historical invoice documents during migration.
 
 ## Decisions Needed Before Implementation
 
-- Confirm the go-live boundary date or rule that separates historical documents from future automated ingestion.
-- Decide whether Gas/Luz should use one invoice header per provider-period or a more granular invoice identity if multiple invoices can share the same period.
-- Decide whether to include the optional `workbook_cell_audit` table in the first migration.
-- Confirm exact units and business meanings for ambiguous columns before building validation rules.
-- Decide whether future manual edits are allowed in the database and, if so, how they should be audited.
+- Choose the concrete `go_live_at` timestamp to record in `migration_batch` when the migration is actually run.
+- Confirm whether `changed_by` in `manual_correction_audit` can default to a simple local username/app user label for this personal system.
+- Before each future extractor is implemented, clarify provider-specific ambiguous fields and units enough to build validation rules.
