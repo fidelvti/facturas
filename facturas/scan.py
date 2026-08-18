@@ -136,13 +136,25 @@ def _iter_active_files(scan_root: Path) -> list[Path]:
                 continue
             if provider == "phone":
                 continue
-            paths.extend(sorted(path for path in provider_dir.rglob("*") if path.is_file()))
+            paths.extend(
+                sorted(
+                    path
+                    for path in provider_dir.rglob("*")
+                    if path.is_file() and not is_system_file(path)
+                )
+            )
         return paths
     return [
         path
         for path in sorted(scan_root.rglob("*"))
-        if path.is_file() and "archivo" not in [part.lower() for part in path.parts]
+        if path.is_file()
+        and not is_system_file(path)
+        and "archivo" not in [part.lower() for part in path.parts]
     ]
+
+
+def is_system_file(path: Path) -> bool:
+    return path.name == ".DS_Store" or path.name.startswith("._")
 
 
 def _is_unsupported_active_filename(path: Path, provider: str) -> bool:

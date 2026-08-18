@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 
 from .db import connect, create_schema, get_current_year, set_current_year
-from .scan import INBOX_PROVIDERS
+from .scan import INBOX_PROVIDERS, is_system_file
 
 
 @dataclass
@@ -78,7 +78,9 @@ def _resolve_print_root_and_inbox(path: Path) -> tuple[Path, Path]:
 
 
 def _build_move_plan(inbox: Path, destination_year: Path) -> list[MovePlan]:
-    direct_files = sorted(path for path in inbox.iterdir() if path.is_file())
+    direct_files = sorted(
+        path for path in inbox.iterdir() if path.is_file() and not is_system_file(path)
+    )
     if direct_files:
         raise ValueError("inbox contains files directly instead of provider subfolders")
 
@@ -90,7 +92,11 @@ def _build_move_plan(inbox: Path, destination_year: Path) -> list[MovePlan]:
     moves: list[MovePlan] = []
     for provider_dir in provider_dirs:
         provider = provider_dir.name.lower()
-        for source in sorted(path for path in provider_dir.rglob("*") if path.is_file()):
+        for source in sorted(
+            path
+            for path in provider_dir.rglob("*")
+            if path.is_file() and not is_system_file(path)
+        ):
             relative = source.relative_to(provider_dir)
             destination = destination_year / provider / relative
             if destination.exists():

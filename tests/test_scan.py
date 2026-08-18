@@ -265,6 +265,48 @@ class ScannerTests(unittest.TestCase):
 
             self.assertEqual(scan.files_considered, 0)
 
+    def test_system_files_under_inbox_do_not_increment_unsupported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "_print"
+            luz_dir = root / "inbox" / "luz"
+            luz_dir.mkdir(parents=True)
+            db_path = Path(tmpdir) / "facturas.sqlite3"
+            report = activate_scanner(root, db_path)
+            start = _from_iso(report.scanner_started_at)
+            ds_store = _write_text(root / "inbox" / ".DS_Store", "ignored")
+            appledouble = _write_text(luz_dir / "._luz08.pdf", "ignored")
+            _set_mtime(ds_store, start + timedelta(seconds=10))
+            _set_mtime(appledouble, start + timedelta(seconds=10))
+
+            with patch("facturas.scan.classify_source_document") as classify:
+                scan = scan_new_files(root, db_path)
+
+            classify.assert_not_called()
+            self.assertEqual(scan.files_considered, 0)
+            self.assertEqual(scan.unsupported_ignored, 0)
+
+    def test_system_files_do_not_prevent_valid_inbox_files_from_processing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "_print"
+            luz_dir = root / "inbox" / "luz"
+            luz_dir.mkdir(parents=True)
+            db_path = Path(tmpdir) / "facturas.sqlite3"
+            report = activate_scanner(root, db_path)
+            start = _from_iso(report.scanner_started_at)
+            ds_store = _write_text(root / "inbox" / ".DS_Store", "ignored")
+            appledouble = _write_text(luz_dir / "._luz08.pdf", "ignored")
+            invoice = _write_text(luz_dir / "luz08.txt", ELECTRICITY_TEXT)
+            _set_mtime(ds_store, start + timedelta(seconds=10))
+            _set_mtime(appledouble, start + timedelta(seconds=10))
+            _set_mtime(invoice, start + timedelta(seconds=10))
+
+            scan = scan_new_files(root, db_path)
+
+            self.assertEqual(scan.imported, 1)
+            self.assertEqual(scan.unsupported_ignored, 0)
+            with connect(db_path) as connection:
+                self.assertEqual(_count(connection, "source_document"), 1)
+
 
 def _from_iso(value: str | None) -> datetime:
     assert value is not None

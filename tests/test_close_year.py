@@ -68,6 +68,35 @@ class CloseYearTests(unittest.TestCase):
 
             self.assertEqual(_current_year(db_path), 2026)
 
+    def test_ds_store_directly_under_inbox_does_not_abort(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            print_root, db_path = _make_print_tree(Path(tmpdir))
+            system_file = _write(print_root / "inbox" / ".DS_Store")
+            invoice = _write(print_root / "inbox" / "luz" / "luz08.pdf")
+
+            report = close_year(print_root, db_path, apply=True)
+
+            self.assertEqual(report.status, "applied")
+            self.assertTrue(system_file.exists())
+            self.assertFalse(invoice.exists())
+            self.assertTrue((print_root / "archivo" / "2026" / "luz" / "luz08.pdf").exists())
+            self.assertEqual(_current_year(db_path), 2027)
+
+    def test_appledouble_files_inside_provider_folders_are_not_moved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            print_root, db_path = _make_print_tree(Path(tmpdir))
+            system_file = _write(print_root / "inbox" / "gas" / "._gas12.pdf")
+            invoice = _write(print_root / "inbox" / "gas" / "gas12.pdf")
+
+            report = close_year(print_root, db_path, apply=True)
+
+            self.assertEqual(report.status, "applied")
+            self.assertTrue(system_file.exists())
+            self.assertFalse(invoice.exists())
+            self.assertFalse((print_root / "archivo" / "2026" / "gas" / "._gas12.pdf").exists())
+            self.assertTrue((print_root / "archivo" / "2026" / "gas" / "gas12.pdf").exists())
+            self.assertEqual(_current_year(db_path), 2027)
+
 
 def _make_print_tree(tmpdir: Path) -> tuple[Path, Path]:
     print_root = tmpdir / "_print"
