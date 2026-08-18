@@ -49,6 +49,14 @@ def classify_source_document(path: Path) -> DocumentClassification:
             reason="filename starts with gftXX",
         )
 
+    if re.match(r"^pagatelia\d{2}(?:-\d+)?\.", name):
+        return DocumentClassification(
+            provider="pagatelia",
+            document_type="toll_invoice",
+            confidence="high",
+            reason="filename starts with pagateliaMM",
+        )
+
     if re.match(r"^pagatelia\d{4}", name):
         return DocumentClassification(
             provider="pagatelia",
@@ -97,6 +105,20 @@ def pagatelia_period_from_filename(path: Path) -> str | None:
     if month < 1 or month > 12:
         return None
     return f"20{match.group('year')}{month:02d}"
+
+
+def active_pagatelia_period_from_filename(
+    path: Path,
+    *,
+    default_year: int,
+) -> str | None:
+    match = re.match(r"^pagatelia(?P<month>[0-9]{2})(?:-[0-9]+)?\.", path.name.lower())
+    if not match:
+        return None
+    month = int(match.group("month"))
+    if month < 1 or month > 12:
+        return None
+    return f"{default_year}{month:02d}"
 
 
 def _period_from_prefixed_filename(

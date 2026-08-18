@@ -227,6 +227,11 @@ CREATE TABLE IF NOT EXISTS scanner_state (
     scanner_started_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_invoice_provider_period ON invoice(provider, period_yyyymm);
 CREATE INDEX IF NOT EXISTS idx_invoice_source_document ON invoice(source_document_id);
 CREATE INDEX IF NOT EXISTS idx_invoice_adjustment_invoice ON invoice_adjustment(invoice_id);
@@ -253,6 +258,7 @@ BUSINESS_TABLES = [
     "payroll_report",
     "manual_correction_audit",
     "scanner_state",
+    "settings",
 ]
 
 
@@ -265,6 +271,28 @@ def connect(database_path: Path) -> sqlite3.Connection:
 def create_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(SCHEMA_SQL)
     _ensure_invoice_amount_payable(connection)
+    _ensure_default_settings(connection)
+
+
+def get_current_year(connection: sqlite3.Connection) -> int:
+    _ensure_default_settings(connection)
+    row = connection.execute(
+        "SELECT value FROM settings WHERE key = 'current_year'"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("current_year setting is missing")
+    return int(row[0])
+
+
+def set_current_year(connection: sqlite3.Connection, year: int) -> None:
+    connection.execute(
+        """
+        INSERT INTO settings (key, value)
+        VALUES ('current_year', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(year),),
+    )
 
 
 def _ensure_invoice_amount_payable(connection: sqlite3.Connection) -> None:
@@ -274,6 +302,16 @@ def _ensure_invoice_amount_payable(connection: sqlite3.Connection) -> None:
     }
     if "amount_payable" not in columns:
         connection.execute("ALTER TABLE invoice ADD COLUMN amount_payable TEXT")
+
+
+def _ensure_default_settings(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        INSERT INTO settings (key, value)
+        VALUES ('current_year', '2026')
+        ON CONFLICT(key) DO NOTHING
+        """
+    )
 
 
 def table_counts(connection: sqlite3.Connection) -> dict[str, int]:

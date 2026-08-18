@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 
 from .classify import classify_source_document
-from .db import connect, create_schema
+from .db import connect, create_schema, get_current_year
 from .extractors.electricity import ingest_electricity_invoice
 from .extractors.gas import ingest_gas_invoice
 from .extractors.pagatelia import ingest_pagatelia_invoice
@@ -63,6 +63,7 @@ def ingest_source_file(source_path: Path, database_path: Path = DATABASE_PATH) -
             )
 
         with connection:
+            current_year = get_current_year(connection)
             source_document_id = _insert_source_document(
                 connection, source_path, classification, file_hash, now
             )
@@ -95,7 +96,7 @@ def ingest_source_file(source_path: Path, database_path: Path = DATABASE_PATH) -
             try:
                 invoice_id, extraction_status, validation_status, reason = provider_ingesters[
                     classification.provider
-                ](connection, source_path, source_document_id, now)
+                ](connection, source_path, source_document_id, now, current_year)
             except Exception as exc:
                 return _manual_review_report(
                     connection,

@@ -67,12 +67,13 @@ def ingest_electricity_invoice(
     source_path: Path,
     source_document_id: int,
     now: str,
+    current_year: int | None = None,
 ) -> tuple[int | None, str, str, str | None]:
     text = extract_document_text(source_path)
     extraction = extract_endesa_ocr_invoice(
         text,
         filename_period_yyyymm=electricity_period_from_filename(
-            source_path, default_year=_year_from_timestamp(now)
+            source_path, default_year=current_year or _year_from_timestamp(now)
         ),
     )
 

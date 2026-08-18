@@ -36,11 +36,51 @@ No se recalculan ni reconcilian las facturas históricas contra sus documentos o
 
 La ingestión automática solo se aplica a documentos nuevos posteriores a la activación del scanner.
 
-## Convención de nombres
+## Organización de `_print`
+
+La carpeta de documentos se organiza en dos zonas:
+
+```text
+_print/
+├── inbox/
+│   ├── agua/
+│   ├── gas/
+│   ├── luz/
+│   ├── gft/
+│   ├── pagatelia/
+│   └── phone/
+└── archivo/
+    └── YYYY/
+```
+
+`_print/inbox` es el área activa. El scanner solo procesa documentos nuevos dentro de sus subcarpetas de proveedor.
+
+`_print/archivo/YYYY` contiene ejercicios cerrados y no se escanea.
+
+Estas carpetas manuales pueden existir bajo `_print`, pero quedan fuera del sistema automático y no se tocan:
+
+- `movistar+`
+- `alarma`
+- `vida_laboral`
+- `tickets`
+
+La carpeta `phone` está organizada dentro de `inbox`, pero todavía no se ingiere automáticamente.
+
+## Ejercicio actual
+
+El año de negocio para los documentos activos se guarda en SQLite en la opción `current_year`.
+
+Por defecto, una base nueva inicializa:
+
+```text
+current_year = 2026
+```
+
+El mes sale del nombre del fichero y el año sale de `current_year`.
+
+## Convención de nombres activos
 
 El periodo de negocio lo determina siempre el **nombre del fichero**, independientemente de las fechas impresas dentro del documento.
-
-### Agua, Gas, Luz y GFT
 
 Formato:
 
@@ -49,6 +89,8 @@ aguaXX.pdf
 gasXX.pdf
 luzXX.pdf
 gftXX.pdf
+pagateliaXX.pdf
+pagateliaXX-N.pdf
 ```
 
 `XX` es el mes.
@@ -60,30 +102,11 @@ agua08.pdf -> 202608
 gas10.pdf  -> 202610
 luz12.pdf  -> 202612
 gft09.pdf  -> 202609
+pagatelia04.pdf   -> 202604
+pagatelia04-2.pdf -> 202604
 ```
 
-### Pagatelia
-
-Pagatelia incluye el año y el mes en el nombre:
-
-```text
-PagateliaYYMM.pdf
-```
-
-Por ejemplo:
-
-```text
-Pagatelia2608.pdf -> 202608
-```
-
-Puede haber más de una factura Pagatelia correspondiente al mismo periodo. En ese caso se permiten sufijos:
-
-```text
-Pagatelia2305a.pdf -> 202305
-Pagatelia2305b.pdf -> 202305
-```
-
-El sufijo no altera el periodo.
+Pagatelia ya no usa el año en los nombres activos. Los nombres históricos tipo `PagateliaYYMM.pdf` no son la convención activa.
 
 ## Instalación
 
@@ -103,11 +126,20 @@ Desde la raíz del proyecto:
 python3 -m facturas.scan "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Data/_print" --database data/facturas.sqlite3
 ```
 
+También puede recibir directamente la carpeta activa:
+
+```bash
+python3 -m facturas.scan "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Data/_print/inbox" --database data/facturas.sqlite3
+```
+
 Este es el comando habitual para incorporar las nuevas facturas.
 
 El scanner:
 
 - ignora los documentos anteriores a su fecha de activación;
+- escanea solo `_print/inbox` cuando se le pasa `_print`;
+- no entra en `_print/archivo`;
+- no procesa las carpetas manuales excluidas ni `inbox/phone`;
 - ignora los nombres de fichero no soportados;
 - procesa únicamente documentos nuevos reconocidos;
 - evita duplicados mediante SHA256;
@@ -125,11 +157,25 @@ python3 -m facturas.ingest "/ruta/al/fichero.pdf" --database data/facturas.sqlit
 
 Por ejemplo:
 
+La ingestión manual sirve como vía alternativa cuando se quiere procesar expresamente un documento concreto.
+
+### Cierre anual
+
+El cierre anual es solo organización de ficheros. No ingiere ni parsea PDFs.
+
+Por defecto se ejecuta en modo simulación:
+
 ```bash
-python3 -m facturas.ingest "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Data/_print/luz09.pdf" --database data/facturas.sqlite3
+python3 -m facturas.close_year "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Data/_print" --database data/facturas.sqlite3
 ```
 
-La ingestión manual sirve como vía alternativa cuando se quiere procesar expresamente un documento concreto.
+Para aplicar los movimientos:
+
+```bash
+python3 -m facturas.close_year "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Data/_print" --database data/facturas.sqlite3 --apply
+```
+
+Con `--apply`, mueve los ficheros de `inbox/<proveedor>/` a `archivo/<current_year>/<proveedor>/`, conserva las carpetas de `inbox` preparadas para el siguiente ejercicio y avanza `current_year` en SQLite.
 
 ## Dashboard
 

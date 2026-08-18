@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import tempfile
 
-from facturas.classify import pagatelia_period_from_filename
+from facturas.classify import active_pagatelia_period_from_filename, pagatelia_period_from_filename
 
 
 @dataclass(frozen=True)
@@ -38,11 +38,19 @@ def ingest_pagatelia_invoice(
     source_path: Path,
     source_document_id: int,
     now: str,
+    current_year: int | None = None,
 ) -> tuple[int | None, str, str, str | None]:
     text = extract_pagatelia_final_page_text(source_path)
+    filename_period = None
+    if current_year is not None:
+        filename_period = active_pagatelia_period_from_filename(
+            source_path, default_year=current_year
+        )
+    if filename_period is None:
+        filename_period = pagatelia_period_from_filename(source_path)
     extraction = extract_pagatelia_invoice(
         text,
-        filename_period_yyyymm=pagatelia_period_from_filename(source_path),
+        filename_period_yyyymm=filename_period,
     )
 
     if not extraction.is_complete:

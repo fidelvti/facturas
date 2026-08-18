@@ -5,10 +5,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 from pathlib import Path
+import re
 
 from .classify import classify_source_document
 from .db import connect, create_schema
 from .ingest import IngestionReport, ingest_source_file
+
+
+AUTO_PROVIDERS = {"agua", "gas", "luz", "gft", "pagatelia"}
+INBOX_PROVIDERS = AUTO_PROVIDERS | {"phone"}
+MANUAL_FOLDERS = {"movistar+", "alarma", "vida_laboral", "tickets"}
 
 
 @dataclass
@@ -66,18 +72,25 @@ def scan_new_files(root: Path, database_path: Path) -> ScanReport:
         )
 
     cutoff = datetime.fromisoformat(started_at)
+    scan_root = _resolve_scan_root(root)
     report = ScanReport(
         status="scanned",
         scanner_started_at=started_at,
-        scanned_root=str(root),
+        scanned_root=str(scan_root),
     )
-    for path in sorted(root.rglob("*")):
+    for path in _iter_active_files(scan_root):
         if not path.is_file():
             continue
         if path.resolve() == database_path:
             continue
         classification = classify_source_document(path)
         if classification.confidence != "high":
+            report.unsupported_ignored += 1
+            continue
+        if classification.provider not in AUTO_PROVIDERS:
+            report.unsupported_ignored += 1
+            continue
+        if _is_unsupported_active_filename(path, classification.provider):
             report.unsupported_ignored += 1
             continue
 
@@ -102,6 +115,41 @@ def scan_new_files(root: Path, database_path: Path) -> ScanReport:
         elif ingestion.status == "manual_review":
             report.manual_review += 1
     return report
+
+
+def _resolve_scan_root(root: Path) -> Path:
+    if (root / "inbox").is_dir():
+        return root / "inbox"
+    if root.name == "inbox":
+        return root
+    return root
+
+
+def _iter_active_files(scan_root: Path) -> list[Path]:
+    if scan_root.name == "inbox":
+        paths: list[Path] = []
+        for provider_dir in sorted(scan_root.iterdir()):
+            if not provider_dir.is_dir():
+                continue
+            provider = provider_dir.name.lower()
+            if provider in MANUAL_FOLDERS or provider not in INBOX_PROVIDERS:
+                continue
+            if provider == "phone":
+                continue
+            paths.extend(sorted(path for path in provider_dir.rglob("*") if path.is_file()))
+        return paths
+    return [
+        path
+        for path in sorted(scan_root.rglob("*"))
+        if path.is_file() and "archivo" not in [part.lower() for part in path.parts]
+    ]
+
+
+def _is_unsupported_active_filename(path: Path, provider: str) -> bool:
+    name = path.name.lower()
+    if provider == "pagatelia":
+        return re.match(r"^pagatelia\d{2}(?:-\d+)?\.", name) is None
+    return re.match(rf"^{provider}\d{{2}}\.", name) is None
 
 
 def _scanner_started_at(connection) -> str | None:
